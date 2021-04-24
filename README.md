@@ -1,5 +1,5 @@
 <a href="https://www.pulumi.com?utm_campaign=pulumi-pulumi-github-repo&utm_source=github.com&utm_medium=top-logo" title="Pulumi - Modern Infrastructure as Code - AWS Azure Kubernetes Containers Serverless">
-    <img src="https://raw.githubusercontent.com/cobraz/pulumi-hugo/8612a6368ea2373ed08bead336a691ff526a73c2/themes/default/static/images/logo/logo-on-white-box.svg" width="450">
+    <img src="https://raw.githubusercontent.com/cobraz/pulumi-hugo/add-logo-on-white-box/themes/default/static/images/logo/logo-on-white-box.svg" width="350">
 </a>
 
 [![Slack](http://www.pulumi.com/images/docs/badges/slack.svg)](https://slack.pulumi.com?utm_campaign=pulumi-pulumi-github-repo&utm_source=github.com&utm_medium=slack-badge)
