@@ -15,7 +15,9 @@
 package test
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -112,16 +114,20 @@ func LoadBaseline(dir, lang string) (map[string][]byte, error) {
 }
 
 // ValidateFileEquality compares maps of files for equality.
-func ValidateFileEquality(t *testing.T, actual, expected map[string][]byte) {
+func ValidateFileEquality(t *testing.T, actual, expected map[string][]byte) bool {
+	ok := true
 	for name, file := range expected {
-		assert.Contains(t, actual, name)
-		assert.Equal(t, string(file), string(actual[name]), name)
-	}
-	for name := range actual {
-		if _, ok := expected[name]; !ok {
-			t.Logf("missing data for %s", name)
+		if !assert.Contains(t, actual, name) || !assert.Equal(t, string(file), string(actual[name]), name) {
+			ok = false
 		}
 	}
+	for name := range actual {
+		if _, has := expected[name]; !has {
+			t.Logf("missing data for %s", name)
+			ok = false
+		}
+	}
+	return ok
 }
 
 // If PULUMI_ACCEPT is set, writes out actual output to the expected
@@ -180,4 +186,48 @@ func CheckAllFilesGenerated(t *testing.T, actual, expected map[string][]byte) {
 	for s := range seen {
 		assert.Fail(t, "No content generated for expected file %s", s)
 	}
+}
+
+// Validates a transformer on a single file.
+func ValidateFileTransformer(
+	t *testing.T,
+	inputFile string,
+	expectedOutputFile string,
+	transformer func(reader io.Reader, writer io.Writer) error) {
+
+	reader, err := os.Open(inputFile)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	var buf bytes.Buffer
+
+	err = transformer(reader, &buf)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	actualBytes := buf.Bytes()
+
+	if os.Getenv("PULUMI_ACCEPT") != "" {
+		err := ioutil.WriteFile(expectedOutputFile, actualBytes, 0600)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+	}
+
+	actual := map[string][]byte{expectedOutputFile: actualBytes}
+
+	expectedBytes, err := ioutil.ReadFile(expectedOutputFile)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	expected := map[string][]byte{expectedOutputFile: expectedBytes}
+
+	ValidateFileEquality(t, actual, expected)
 }

@@ -2,20 +2,29 @@ package test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+type ThenFunc func(t *testing.T, testDir string)
 
 type sdkTest struct {
 	Directory   string
 	Description string
 	Skip        codegen.StringSet
+	Then        map[string]ThenFunc
 }
 
 var sdkTests = []sdkTest{
+	{
+		Directory:   "dash-named-schema",
+		Description: "Simple schema with a two part name (foo-bar)",
+	},
 	{
 		Directory:   "external-resource-schema",
 		Description: "External resource schema",
@@ -35,6 +44,17 @@ var sdkTests = []sdkTest{
 	{
 		Directory:   "resource-args-python",
 		Description: "Resource args with same named resource and type",
+		Then: map[string]ThenFunc{
+			"go": func(t *testing.T, testDir string) {
+				cmd := exec.Command("go", "test", "./...")
+				cmd.Dir = filepath.Join(testDir, "go-program")
+
+				out, err := cmd.CombinedOutput()
+				if !assert.NoError(t, err) {
+					t.Logf("output: %v", string(out))
+				}
+			},
+		},
 	},
 	{
 		Directory:   "simple-enum-schema",
@@ -59,7 +79,6 @@ var sdkTests = []sdkTest{
 	{
 		Directory:   "simple-methods-schema",
 		Description: "Simple schema with methods",
-		Skip:        codegen.NewStringSet("docs", "dotnet"),
 	},
 	{
 		Directory:   "simple-yaml-schema",
@@ -102,18 +121,20 @@ func TestSDKCodegen(t *testing.T, language string, genPackage GenPkgSignature) {
 			}
 
 			files, err := GeneratePackageFilesFromSchema(schemaPath, genPackage)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
-			dir := filepath.Join(testDir, tt.Directory)
+			if !RewriteFilesWhenPulumiAccept(t, dirPath, language, files) {
+				expectedFiles, err := LoadBaseline(dirPath, language)
+				require.NoError(t, err)
 
-			if RewriteFilesWhenPulumiAccept(t, dir, language, files) {
-				return
+				if !ValidateFileEquality(t, files, expectedFiles) {
+					return
+				}
 			}
 
-			expectedFiles, err := LoadBaseline(dir, language)
-			assert.NoError(t, err)
-
-			ValidateFileEquality(t, files, expectedFiles)
+			if then, ok := tt.Then[language]; ok {
+				then(t, dirPath)
+			}
 		})
 	}
 }

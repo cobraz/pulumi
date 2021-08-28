@@ -118,7 +118,7 @@ type StaticPageArrayInput interface {
 type StaticPageArray []StaticPageInput
 
 func (StaticPageArray) ElementType() reflect.Type {
-	return reflect.TypeOf(([]*StaticPage)(nil))
+	return reflect.TypeOf((*[]*StaticPage)(nil)).Elem()
 }
 
 func (i StaticPageArray) ToStaticPageArrayOutput() StaticPageArrayOutput {
@@ -143,7 +143,7 @@ type StaticPageMapInput interface {
 type StaticPageMap map[string]StaticPageInput
 
 func (StaticPageMap) ElementType() reflect.Type {
-	return reflect.TypeOf((map[string]*StaticPage)(nil))
+	return reflect.TypeOf((*map[string]*StaticPage)(nil)).Elem()
 }
 
 func (i StaticPageMap) ToStaticPageMapOutput() StaticPageMapOutput {
@@ -154,9 +154,7 @@ func (i StaticPageMap) ToStaticPageMapOutputWithContext(ctx context.Context) Sta
 	return pulumi.ToOutputWithContext(ctx, i).(StaticPageMapOutput)
 }
 
-type StaticPageOutput struct {
-	*pulumi.OutputState
-}
+type StaticPageOutput struct{ *pulumi.OutputState }
 
 func (StaticPageOutput) ElementType() reflect.Type {
 	return reflect.TypeOf((*StaticPage)(nil))
@@ -175,14 +173,12 @@ func (o StaticPageOutput) ToStaticPagePtrOutput() StaticPagePtrOutput {
 }
 
 func (o StaticPageOutput) ToStaticPagePtrOutputWithContext(ctx context.Context) StaticPagePtrOutput {
-	return o.ApplyT(func(v StaticPage) *StaticPage {
+	return o.ApplyTWithContext(ctx, func(_ context.Context, v StaticPage) *StaticPage {
 		return &v
 	}).(StaticPagePtrOutput)
 }
 
-type StaticPagePtrOutput struct {
-	*pulumi.OutputState
-}
+type StaticPagePtrOutput struct{ *pulumi.OutputState }
 
 func (StaticPagePtrOutput) ElementType() reflect.Type {
 	return reflect.TypeOf((**StaticPage)(nil))
@@ -194,6 +190,16 @@ func (o StaticPagePtrOutput) ToStaticPagePtrOutput() StaticPagePtrOutput {
 
 func (o StaticPagePtrOutput) ToStaticPagePtrOutputWithContext(ctx context.Context) StaticPagePtrOutput {
 	return o
+}
+
+func (o StaticPagePtrOutput) Elem() StaticPageOutput {
+	return o.ApplyT(func(v *StaticPage) StaticPage {
+		if v != nil {
+			return *v
+		}
+		var ret StaticPage
+		return ret
+	}).(StaticPageOutput)
 }
 
 type StaticPageArrayOutput struct{ *pulumi.OutputState }

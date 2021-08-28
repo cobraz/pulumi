@@ -15,7 +15,10 @@
 package pulumi
 
 import (
+	"context"
+	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 )
@@ -33,50 +36,74 @@ var providerResourceStateType = reflect.TypeOf(ProviderResourceState{})
 
 // ResourceState is the base
 type ResourceState struct {
+	m sync.RWMutex
+
 	urn URNOutput `pulumi:"urn"`
 
-	providers map[string]ProviderResource
-
-	provider ProviderResource
-
-	version string
-
-	aliases []URNOutput
-
-	name string
-
+	children        resourceSet
+	providers       map[string]ProviderResource
+	provider        ProviderResource
+	version         string
+	aliases         []URNOutput
+	name            string
 	transformations []ResourceTransformation
+
+	remoteComponent bool
 }
 
-func (s ResourceState) URN() URNOutput {
+func (s *ResourceState) URN() URNOutput {
 	return s.urn
 }
 
-func (s ResourceState) GetProvider(token string) ProviderResource {
+func (s *ResourceState) GetProvider(token string) ProviderResource {
 	return s.providers[getPackage(token)]
 }
 
-func (s ResourceState) getProviders() map[string]ProviderResource {
+func (s *ResourceState) getChildren() []Resource {
+	s.m.RLock()
+	defer s.m.RUnlock()
+
+	var children []Resource
+	if len(s.children) != 0 {
+		children = make([]Resource, 0, len(s.children))
+		for r := range s.children {
+			children = append(children, r)
+		}
+	}
+	return children
+}
+
+func (s *ResourceState) addChild(r Resource) {
+	s.m.Lock()
+	defer s.m.Unlock()
+
+	if s.children == nil {
+		s.children = resourceSet{}
+	}
+	s.children.add(r)
+}
+
+func (s *ResourceState) getProviders() map[string]ProviderResource {
 	return s.providers
 }
 
-func (s ResourceState) getProvider() ProviderResource {
+func (s *ResourceState) getProvider() ProviderResource {
 	return s.provider
 }
 
-func (s ResourceState) getVersion() string {
+func (s *ResourceState) getVersion() string {
 	return s.version
 }
 
-func (s ResourceState) getAliases() []URNOutput {
+func (s *ResourceState) getAliases() []URNOutput {
 	return s.aliases
 }
 
-func (s ResourceState) getName() string {
+func (s *ResourceState) getName() string {
 	return s.name
 }
 
-func (s ResourceState) getTransformations() []ResourceTransformation {
+func (s *ResourceState) getTransformations() []ResourceTransformation {
 	return s.transformations
 }
 
@@ -84,12 +111,23 @@ func (s *ResourceState) addTransformation(t ResourceTransformation) {
 	s.transformations = append(s.transformations, t)
 }
 
-func (ResourceState) isResource() {}
+func (s *ResourceState) markRemoteComponent() {
+	s.remoteComponent = true
+}
+
+func (s *ResourceState) isRemoteComponent() bool {
+	return s.remoteComponent
+}
+
+func (*ResourceState) isResource() {}
 
 func (ctx *Context) newDependencyResource(urn URN) Resource {
 	var res ResourceState
 	res.urn.OutputState = ctx.newOutputState(res.urn.ElementType(), &res)
 	res.urn.resolve(urn, true, false, nil)
+
+	// For the purposes of dependency management, dependency resources are treated like remote components.
+	res.remoteComponent = true
 	return &res
 }
 
@@ -99,11 +137,11 @@ type CustomResourceState struct {
 	id IDOutput `pulumi:"id"`
 }
 
-func (s CustomResourceState) ID() IDOutput {
+func (s *CustomResourceState) ID() IDOutput {
 	return s.id
 }
 
-func (CustomResourceState) isCustomResource() {}
+func (*CustomResourceState) isCustomResource() {}
 
 func (ctx *Context) newDependencyCustomResource(urn URN, id ID) CustomResource {
 	var res CustomResourceState
@@ -120,7 +158,7 @@ type ProviderResourceState struct {
 	pkg string
 }
 
-func (s ProviderResourceState) getPackage() string {
+func (s *ProviderResourceState) getPackage() string {
 	return s.pkg
 }
 
@@ -138,6 +176,12 @@ func (ctx *Context) newDependencyProviderResource(urn URN, id ID) ProviderResour
 type Resource interface {
 	// URN is this resource's stable logical URN used to distinctly address it before, during, and after deployments.
 	URN() URNOutput
+
+	// getChildren returns the resource's children.
+	getChildren() []Resource
+
+	// addChild adds a child to the resource.
+	addChild(r Resource)
 
 	// getProviders returns the provider map for this resource.
 	getProviders() map[string]ProviderResource
@@ -162,6 +206,12 @@ type Resource interface {
 
 	// addTransformation adds a single transformation to the resource.
 	addTransformation(t ResourceTransformation)
+
+	// markRemoteComponent marks this resource as a remote component resource.
+	markRemoteComponent()
+
+	// isRemoteComponent returns true if this is not a local (i.e. in-process) component resource.
+	isRemoteComponent() bool
 }
 
 // CustomResource is a cloud resource whose create, read, update, and delete (CRUD) operations are managed by performing
@@ -207,7 +257,7 @@ type resourceOptions struct {
 	// DeleteBeforeReplace, when set to true, ensures that this resource is deleted prior to replacement.
 	DeleteBeforeReplace bool
 	// DependsOn is an optional array of explicit dependencies on other resources.
-	DependsOn []Resource
+	DependsOn []func(ctx context.Context) (urnSet, error)
 	// IgnoreChanges ignores changes to any of the specified properties.
 	IgnoreChanges []string
 	// Import, when provided with a resource ID, indicates that this resource's provider should import its state from
@@ -314,7 +364,41 @@ func DeleteBeforeReplace(o bool) ResourceOption {
 // DependsOn is an optional array of explicit dependencies on other resources.
 func DependsOn(o []Resource) ResourceOption {
 	return resourceOption(func(ro *resourceOptions) {
-		ro.DependsOn = append(ro.DependsOn, o...)
+		ro.DependsOn = append(ro.DependsOn, func(ctx context.Context) (urnSet, error) {
+			return expandDependencies(ctx, o)
+		})
+	})
+}
+
+// Declares explicit dependencies on other resources. Similar to
+// `DependsOn`, but also admits resource inputs and outputs:
+//
+//     var r Resource
+//     var ri ResourceInput
+//     var ro ResourceOutput
+//     allDeps := NewResourceArrayOutput(NewResourceOutput(r), ri.ToResourceOutput(), ro)
+//     DependsOnInputs(allDeps)
+func DependsOnInputs(o ResourceArrayInput) ResourceOption {
+	return resourceOption(func(ro *resourceOptions) {
+		ro.DependsOn = append(ro.DependsOn, func(ctx context.Context) (urnSet, error) {
+			out := o.ToResourceArrayOutput()
+
+			value, known, _ /* secret */, _ /* deps */, err := out.await(ctx)
+			if err != nil || !known {
+				return nil, err
+			}
+
+			resources, ok := value.([]Resource)
+			if !ok {
+				return nil, fmt.Errorf("ResourceArrayInput resolved to a value of unexpected type %v, expected []Resource",
+					reflect.TypeOf(value))
+			}
+
+			// For some reason, deps returned above are incorrect; instead:
+			toplevelDeps := out.dependencies()
+
+			return expandDependencies(ctx, append(resources, toplevelDeps...))
+		})
 	})
 }
 

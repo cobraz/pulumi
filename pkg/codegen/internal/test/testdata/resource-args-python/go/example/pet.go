@@ -129,7 +129,7 @@ type PetArrayInput interface {
 type PetArray []PetInput
 
 func (PetArray) ElementType() reflect.Type {
-	return reflect.TypeOf(([]*Pet)(nil))
+	return reflect.TypeOf((*[]*Pet)(nil)).Elem()
 }
 
 func (i PetArray) ToPetArrayOutput() PetArrayOutput {
@@ -154,7 +154,7 @@ type PetMapInput interface {
 type PetMap map[string]PetInput
 
 func (PetMap) ElementType() reflect.Type {
-	return reflect.TypeOf((map[string]*Pet)(nil))
+	return reflect.TypeOf((*map[string]*Pet)(nil)).Elem()
 }
 
 func (i PetMap) ToPetMapOutput() PetMapOutput {
@@ -165,9 +165,7 @@ func (i PetMap) ToPetMapOutputWithContext(ctx context.Context) PetMapOutput {
 	return pulumi.ToOutputWithContext(ctx, i).(PetMapOutput)
 }
 
-type PetOutput struct {
-	*pulumi.OutputState
-}
+type PetOutput struct{ *pulumi.OutputState }
 
 func (PetOutput) ElementType() reflect.Type {
 	return reflect.TypeOf((*Pet)(nil))
@@ -186,14 +184,12 @@ func (o PetOutput) ToPetPtrOutput() PetPtrOutput {
 }
 
 func (o PetOutput) ToPetPtrOutputWithContext(ctx context.Context) PetPtrOutput {
-	return o.ApplyT(func(v Pet) *Pet {
+	return o.ApplyTWithContext(ctx, func(_ context.Context, v Pet) *Pet {
 		return &v
 	}).(PetPtrOutput)
 }
 
-type PetPtrOutput struct {
-	*pulumi.OutputState
-}
+type PetPtrOutput struct{ *pulumi.OutputState }
 
 func (PetPtrOutput) ElementType() reflect.Type {
 	return reflect.TypeOf((**Pet)(nil))
@@ -205,6 +201,16 @@ func (o PetPtrOutput) ToPetPtrOutput() PetPtrOutput {
 
 func (o PetPtrOutput) ToPetPtrOutputWithContext(ctx context.Context) PetPtrOutput {
 	return o
+}
+
+func (o PetPtrOutput) Elem() PetOutput {
+	return o.ApplyT(func(v *Pet) Pet {
+		if v != nil {
+			return *v
+		}
+		var ret Pet
+		return ret
+	}).(PetOutput)
 }
 
 type PetArrayOutput struct{ *pulumi.OutputState }

@@ -24,6 +24,7 @@ import { Inputs, Output, output } from "../output";
 import * as resource from "../resource";
 import * as runtime from "../runtime";
 import { version } from "../version";
+import { parseArgs } from "./internals";
 
 const requireFromString = require("require-from-string");
 const anyproto = require("google-protobuf/google/protobuf/any_pb.js");
@@ -263,7 +264,7 @@ class Server implements grpc.UntypedServiceImplementation {
         // in its own context, possibly using Node's `createContext` API to avoid modifying global state:
         // https://nodejs.org/api/vm.html#vm_vm_createcontext_contextobject_options
         const res = this.constructCallQueue.then(() => this.constructImpl(call, callback));
-        // tslint:disable:no-empty
+        /* eslint-disable no-empty,no-empty-function,@typescript-eslint/no-empty-function */
         this.constructCallQueue = res.catch(() => {});
         return res;
     }
@@ -354,7 +355,7 @@ class Server implements grpc.UntypedServiceImplementation {
         // in its own context, possibly using Node's `createContext` API to avoid modifying global state:
         // https://nodejs.org/api/vm.html#vm_vm_createcontext_contextobject_options
         const res = this.constructCallQueue.then(() => this.callImpl(call, callback));
-        // tslint:disable:no-empty
+        /* eslint-disable no-empty, no-empty-function, @typescript-eslint/no-empty-function */
         this.constructCallQueue = res.catch(() => {});
         return res;
     }
@@ -468,7 +469,7 @@ function configureRuntime(req: any, engineAddr: string) {
     // NOTE: these are globals! We should ensure that all settings are identical between calls, and eventually
     // refactor so we can avoid the global state.
     runtime.resetOptions(req.getProject(), req.getStack(), req.getParallel(), engineAddr,
-                                req.getMonitorendpoint(), req.getDryrun());
+        req.getMonitorendpoint(), req.getDryrun());
 
     const pulumiConfig: {[key: string]: string} = {};
     const rpcConfig = req.getConfigMap();
@@ -512,7 +513,7 @@ async function deserializeInputs(inputsStruct: any, inputDependencies: any): Pro
 // rejected the resource, or an initialization error, where the API server has accepted the
 // resource, but it failed to initialize (e.g., the app code is continually crashing and the
 // resource has failed to become alive).
-function grpcResponseFromError(e: {id: string, properties: any, message: string, reasons?: string[]}) {
+function grpcResponseFromError(e: {id: string; properties: any; message: string; reasons?: string[]}) {
     // Create response object.
     const resp = new statusproto.Status();
     resp.setCode(grpc.status.UNKNOWN);
@@ -570,14 +571,16 @@ export async function main(provider: Provider, args: string[]) {
         }
     });
 
+    const parsedArgs = parseArgs(args);
+
     // The program requires a single argument: the address of the RPC endpoint for the engine.  It
     // optionally also takes a second argument, a reference back to the engine, but this may be missing.
-    if (args.length === 0) {
+    if (parsedArgs === undefined) {
         console.error("fatal: Missing <engine> address");
         process.exit(-1);
         return;
     }
-    const engineAddr: string = args[0];
+    const engineAddr: string = parsedArgs.engineAddress;
 
     // Finally connect up the gRPC client/server and listen for incoming requests.
     const server = new grpc.Server({

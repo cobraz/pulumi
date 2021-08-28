@@ -1040,6 +1040,10 @@ func TestConstructMethodsNode(t *testing.T) {
 	}
 }
 
+func TestConstructMethodsUnknownNode(t *testing.T) {
+	testConstructMethodsUnknown(t, "nodejs", "@pulumi/pulumi")
+}
+
 func TestConstructProviderNode(t *testing.T) {
 	const testDir = "construct_component_provider"
 	tests := []struct {
@@ -1119,5 +1123,14 @@ func TestConstructNodeErrorApply(t *testing.T) {
 
 	t.Run(componentDir, func(t *testing.T) {
 		integration.ProgramTest(t, opts)
+	})
+}
+
+// Test targeting `es2016` in `tsconfig.json` works.
+func TestCompilerOptionsNode(t *testing.T) {
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		Dir:          filepath.Join("nodejs", "compiler_options"),
+		Dependencies: []string{"@pulumi/pulumi"},
+		Quick:        true,
 	})
 }

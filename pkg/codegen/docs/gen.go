@@ -48,13 +48,6 @@ var (
 	packagedTemplates  map[string][]byte
 	docHelpers         map[string]codegen.DocLanguageHelper
 
-	// The following property case maps are for rendering property
-	// names of nested properties in Python language with the correct
-	// casing.
-	snakeCaseToCamelCase map[string]string
-	camelCaseToSnakeCase map[string]string
-	seenCasingTypes      codegen.Set
-
 	// The language-specific info objects for a certain package (provider).
 	goPkgInfo     go_gen.GoPackageInfo
 	csharpPkgInfo dotnet.CSharpPackageInfo
@@ -146,9 +139,6 @@ func init() {
 		}
 	}
 
-	snakeCaseToCamelCase = map[string]string{}
-	camelCaseToSnakeCase = map[string]string{}
-	seenCasingTypes = codegen.Set{}
 	langModuleNameLookup = map[string]string{}
 }
 
@@ -286,6 +276,9 @@ type resourceDocArgs struct {
 	// NestedTypes is a slice of the nested types used in the input and
 	// output properties.
 	NestedTypes []docNestedType
+
+	// A list of methods associated with the resource.
+	Methods []methodDocArgs
 
 	PackageDetails packageDetails
 }
@@ -895,12 +888,21 @@ func (mod *modContext) genNestedTypes(member interface{}, resourceType bool) []d
 // the provided slice of properties in the schema.
 func (mod *modContext) getProperties(properties []*schema.Property, lang string, input, nested, isProvider bool,
 ) []property {
+	return mod.getPropertiesWithIDPrefixAndExclude(properties, lang, input, nested, isProvider, "", nil)
+}
+
+func (mod *modContext) getPropertiesWithIDPrefixAndExclude(properties []*schema.Property, lang string, input, nested,
+	isProvider bool, idPrefix string, exclude func(name string) bool) []property {
 	if len(properties) == 0 {
 		return nil
 	}
 	docProperties := make([]property, 0, len(properties))
 	for _, prop := range properties {
 		if prop == nil {
+			continue
+		}
+
+		if exclude != nil && exclude(prop.Name) {
 			continue
 		}
 
@@ -920,7 +922,7 @@ func (mod *modContext) getProperties(properties []*schema.Property, lang string,
 		}
 		propLangName := name
 
-		propID := strings.ToLower(propLangName + propertyLangSeparator + lang)
+		propID := idPrefix + strings.ToLower(propLangName+propertyLangSeparator+lang)
 
 		propTypes := make([]propertyType, 0)
 		if typ, isUnion := codegen.UnwrapType(prop.Type).(*schema.UnionType); isUnion {
@@ -1404,6 +1406,8 @@ func (mod *modContext) genResource(r *schema.Resource) resourceDocArgs {
 		StateParam:       stateParam,
 		NestedTypes:      mod.genNestedTypes(r, true /*resourceType*/),
 
+		Methods: mod.genMethods(r),
+
 		PackageDetails: packageDetails,
 	}
 
@@ -1452,6 +1456,9 @@ func (mod *modContext) getTypes(member interface{}, types nestedTypeUsageInfo) {
 		}
 		for _, p := range t.InputProperties {
 			mod.getNestedTypes(p.Type, types, true)
+		}
+		for _, m := range t.Methods {
+			mod.getTypes(m.Function, types)
 		}
 	case *schema.Function:
 		if t.Inputs != nil {
@@ -1734,17 +1741,6 @@ func getMod(pkg *schema.Package, token string, tokenPkg *schema.Package, modules
 	return mod
 }
 
-func generatePythonPropertyCaseMaps(mod *modContext, r *schema.Resource, seenTypes codegen.Set) {
-	pyLangHelper := getLanguageDocHelper("python").(*python.DocLanguageHelper)
-	for _, p := range r.Properties {
-		pyLangHelper.GenPropertyCaseMap(mod.pkg, mod.mod, mod.tool, p, snakeCaseToCamelCase, camelCaseToSnakeCase, seenTypes)
-	}
-
-	for _, p := range r.InputProperties {
-		pyLangHelper.GenPropertyCaseMap(mod.pkg, mod.mod, mod.tool, p, snakeCaseToCamelCase, camelCaseToSnakeCase, seenTypes)
-	}
-}
-
 func generateModulesFromSchemaPackage(tool string, pkg *schema.Package) map[string]*modContext {
 	// Group resources, types, and functions into modules.
 	modules := map[string]*modContext{}
@@ -1792,8 +1788,6 @@ func generateModulesFromSchemaPackage(tool string, pkg *schema.Package) map[stri
 		mod := getMod(pkg, r.Token, r.Package, modules, tool, true)
 		mod.resources = append(mod.resources, r)
 		visitObjects(r)
-
-		generatePythonPropertyCaseMaps(mod, r, seenCasingTypes)
 	}
 
 	scanK8SResource := func(r *schema.Resource) {
@@ -1817,8 +1811,10 @@ func generateModulesFromSchemaPackage(tool string, pkg *schema.Package) map[stri
 	glog.V(3).Infoln("done scanning resources")
 
 	for _, f := range pkg.Functions {
-		mod := getMod(pkg, f.Token, f.Package, modules, tool, true)
-		mod.functions = append(mod.functions, f)
+		if !f.IsMethod {
+			mod := getMod(pkg, f.Token, f.Package, modules, tool, true)
+			mod.functions = append(mod.functions, f)
+		}
 	}
 
 	// Find nested types.

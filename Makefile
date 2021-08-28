@@ -1,7 +1,8 @@
 PROJECT_NAME := Pulumi SDK
+PROJECT_ROOT := $(realpath .)
 SUB_PROJECTS := sdk/dotnet sdk/nodejs sdk/python sdk/go
-include build/common.mk
 
+include build/common.mk
 
 PROJECT         := github.com/pulumi/pulumi/pkg/v3/cmd/pulumi
 PROJECT_PKGS    := $(shell cd ./pkg && go list ./... | grep -v /vendor/)
@@ -9,6 +10,10 @@ TESTS_PKGS      := $(shell cd ./tests && go list -tags all ./... | grep -v tests
 VERSION         := $(shell pulumictl get version)
 
 TESTPARALLELISM := 10
+
+# Motivation: running `make TEST_ALL_DEPS= test_all` permits running
+# `test_all` without the dependencies.
+TEST_ALL_DEPS = build $(SUB_PROJECTS:%=%_install)
 
 ensure::
 	$(call STEP_MESSAGE)
@@ -31,6 +36,9 @@ build:: generate
 build_debug:: generate
 	cd pkg && go install -gcflags="all=-N -l" -ldflags "-X github.com/pulumi/pulumi/pkg/v3/version.Version=${VERSION}" ${PROJECT}
 
+developer_docs::
+	cd developer-docs && make html
+
 install:: generate
 	cd pkg && GOBIN=$(PULUMI_BIN) go install -ldflags "-X github.com/pulumi/pulumi/pkg/v3/version.Version=${VERSION}" ${PROJECT}
 
@@ -52,7 +60,7 @@ lint::
 test_fast:: build
 	cd pkg && $(GO_TEST_FAST) ${PROJECT_PKGS}
 
-test_build:: $(SUB_PROJECTS:%=%_install)
+test_build:: $(TEST_ALL_DEPS)
 	cd tests/testprovider && go build -o pulumi-resource-testprovider
 	cd tests/integration/construct_component/testcomponent && yarn install && yarn link @pulumi/pulumi && yarn run tsc
 	cd tests/integration/construct_component/testcomponent-go && go build -o pulumi-resource-testcomponent
@@ -68,8 +76,10 @@ test_build:: $(SUB_PROJECTS:%=%_install)
 	cd tests/integration/construct_component_methods/testcomponent-go && go build -o pulumi-resource-testcomponent
 	cd tests/integration/construct_component_provider/testcomponent && yarn install && yarn link @pulumi/pulumi && yarn run tsc
 	cd tests/integration/construct_component_provider/testcomponent-go && go build -o pulumi-resource-testcomponent
+	cd tests/integration/construct_component_methods_unknown/testcomponent && yarn install && yarn link @pulumi/pulumi && yarn run tsc
+	cd tests/integration/construct_component_methods_unknown/testcomponent-go && go build -o pulumi-resource-testcomponent
 
-test_all:: build test_build $(SUB_PROJECTS:%=%_install)
+test_all:: test_build
 	cd pkg && $(GO_TEST) ${PROJECT_PKGS}
 	cd tests && $(GO_TEST) -p=1 ${TESTS_PKGS}
 

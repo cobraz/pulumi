@@ -16,16 +16,18 @@
 
 import asyncio
 import copy
-from typing import Optional, List, Any, Mapping, Union, Callable, Tuple, TYPE_CHECKING, cast
+from typing import Optional, List, Any, Mapping, Sequence, Union, Set, Callable, Tuple, TYPE_CHECKING, cast
 from . import _types
 from .metadata import get_project, get_stack
 from .runtime import known_types
 from .runtime.resource import get_resource, register_resource, register_resource_outputs, read_resource, \
     convert_providers
 from .runtime.settings import get_root_resource
+from .output import _is_prompt, _map_input, _map2_input, T, Output
+from . import urn as urn_util
 
 if TYPE_CHECKING:
-    from .output import Input, Inputs, Output
+    from .output import Input, Inputs
     from .runtime.stack import Stack
 
 
@@ -78,7 +80,6 @@ def inherited_child_alias(
 #   * parentAliasName: "app"
 #   * aliasName: "app-function"
 #   * childAlias: "urn:pulumi:stackname::projectname::aws:s3/bucket:Bucket::app-function"
-    from . import Output  # pylint: disable=import-outside-toplevel
     alias_name = Output.from_input(child_name)
     if child_name.startswith(parent_name):
         alias_name = Output.from_input(parent_alias).apply(
@@ -185,7 +186,6 @@ def collapse_alias_to_urn(
     """
     collapse_alias_to_urn turns an Alias into a URN given a set of default data
     """
-    from . import Output  # pylint: disable=import-outside-toplevel
 
     def collapse_alias_to_urn_worker(inner: Union[Alias, str]) -> Output[str]:
         if isinstance(inner, str):
@@ -298,9 +298,9 @@ class ResourceOptions:
     resource.
     """
 
-    depends_on: Optional[List['Resource']]
+    depends_on: Optional['Input[Union[Sequence[Input[Resource]], Resource]]']
     """
-    If provided, the currently-constructing resource depends on the provided list of resources.
+    If provided, declares that the currently-constructing resource depends on the given resources.
     """
 
     protect: Optional[bool]
@@ -320,7 +320,7 @@ class ResourceOptions:
     the parent's provider bag (see also ResourceOptions.providers).
     """
 
-    providers: Optional[Union[Mapping[str, 'ProviderResource'], List['ProviderResource']]]
+    providers: Optional[Union[Mapping[str, 'ProviderResource'], Sequence['ProviderResource']]]
     """
     An optional set of providers to use for child resources. Keyed by package name (e.g. "aws"), or just
     provided as a list. In the latter case, the package name will be retrieved from the provider itself.
@@ -339,7 +339,7 @@ class ResourceOptions:
     current package and should rarely be used.
     """
 
-    aliases: Optional[List['Input[Union[str, Alias]]']]
+    aliases: Optional[Sequence['Input[Union[str, Alias]]']]
     """
     An optional list of aliases to treat this resource as matching.
     """
@@ -391,14 +391,14 @@ class ResourceOptions:
     # pylint: disable=redefined-builtin
     def __init__(self,
                  parent: Optional['Resource'] = None,
-                 depends_on: Optional[List['Resource']] = None,
+                 depends_on: Optional['Input[Union[Sequence[Input[Resource]], Resource]]'] = None,
                  protect: Optional[bool] = None,
                  provider: Optional['ProviderResource'] = None,
                  providers: Optional[Union[Mapping[str, 'ProviderResource'], List['ProviderResource']]] = None,
                  delete_before_replace: Optional[bool] = None,
                  ignore_changes: Optional[List[str]] = None,
                  version: Optional[str] = None,
-                 aliases: Optional[List['Input[Union[str, Alias]]']] = None,
+                 aliases: Optional[Sequence['Input[Union[str, Alias]]']] = None,
                  additional_secret_outputs: Optional[List[str]] = None,
                  id: Optional['Input[str]'] = None,
                  import_: Optional[str] = None,
@@ -409,8 +409,8 @@ class ResourceOptions:
         """
         :param Optional[Resource] parent: If provided, the currently-constructing resource should be the child of
                the provided parent resource.
-        :param Optional[List[Resource]] depends_on: If provided, the currently-constructing resource depends on the
-               provided list of resources.
+        :param Optional[Input[Union[List[Input[Resource]],Resource]]] depends_on: If provided, declares that the
+               currently-constructing resource depends on the given resources.
         :param Optional[bool] protect: If provided and True, this resource is not allowed to be deleted.
         :param Optional[ProviderResource] provider: An optional provider to use for this resource's CRUD operations.
                If no provider is supplied, the default provider for the resource's package will be used. The default
@@ -449,7 +449,6 @@ class ResourceOptions:
         self.merge.__func__.__doc__ = ResourceOptions.merge.__doc__ # type: ignore
 
         self.parent = parent
-        self.depends_on = depends_on
         self.protect = protect
         self.provider = provider
         self.providers = providers
@@ -464,15 +463,26 @@ class ResourceOptions:
         self.transformations = transformations
         self.urn = urn
         self.replace_on_changes = replace_on_changes
+        self.depends_on = depends_on
 
-        if depends_on is not None:
-            for dep in depends_on:
-                if not isinstance(dep, Resource):
-                    raise Exception(
-                        "'depends_on' was passed a value that was not a Resource.")
+        # Proactively check that `depends_on` values are of type
+        # `Resource`. We cannot complete the check in the general case
+        # and can only do it on promptly available arguments.
+        deps = self._depends_on_list()
+        if isinstance(deps, list):
+            for dep in deps:
+                if _is_prompt(dep) and not isinstance(dep, Resource):
+                    raise Exception(f"'depends_on' was passed a value {dep} that was not a Resource.")
 
     def _merge_instance(self, opts: 'ResourceOptions') -> 'ResourceOptions':
         return ResourceOptions.merge(self, opts)
+
+    def _depends_on_list(self) -> 'Input[List[Input[Resource]]]':
+
+        if self.depends_on is None:
+            return []
+
+        return _map_input(self.depends_on, lambda x: list(x) if isinstance(x, Sequence) else [cast(Any, x)])
 
     # pylint: disable=method-hidden
     @staticmethod
@@ -521,7 +531,11 @@ class ResourceOptions:
         _expand_providers(source)
 
         dest.providers = _merge_lists(dest.providers, source.providers)
-        dest.depends_on = _merge_lists(dest.depends_on, source.depends_on)
+
+        dest.depends_on = _map2_input(dest._depends_on_list(),
+                                      source._depends_on_list(),
+                                      lambda xs, ys: xs + ys)
+
         dest.ignore_changes = _merge_lists(dest.ignore_changes, source.ignore_changes)
         dest.replace_on_changes = _merge_lists(dest.replace_on_changes, source.replace_on_changes)
         dest.aliases = _merge_lists(dest.aliases, source.aliases)
@@ -550,7 +564,7 @@ def _expand_providers(options: 'ResourceOptions'):
         options.providers = [options.provider]
 
     # Convert 'providers' map to list form.
-    if options.providers is not None and not isinstance(options.providers, list):
+    if options.providers is not None and isinstance(options.providers, Mapping):
         options.providers = list(options.providers.values())
 
     options.provider = None
@@ -558,7 +572,7 @@ def _expand_providers(options: 'ResourceOptions'):
 
 def _collapse_providers(opts: 'ResourceOptions'):
     # If we have only 0-1 providers, then merge that back down to the .provider field.
-    providers: Optional[Union[Mapping[str, ProviderResource], List[ProviderResource]]] = opts.providers
+    providers: Optional[Union[Mapping[str, ProviderResource], Sequence[ProviderResource]]] = opts.providers
     if providers is not None:
         provider_length = len(providers)
         if provider_length == 0:
@@ -627,6 +641,8 @@ class Resource:
     """
     The name assigned to the resource at construction.
     """
+
+    _childResources: Set['Resource']
 
 # !!! IMPORTANT !!! If you add a new attribute to this type, make sure to verify that merge_options
 # works properly for it.
@@ -710,10 +726,15 @@ class Resource:
         opts = copy.copy(opts)
 
         self._providers = {}
+        self._childResources = set()
+
         # Check the parent type if one exists and fill in any default options.
         if opts.parent is not None:
             if not isinstance(opts.parent, Resource):
                 raise TypeError("Resource parent is not a valid Resource")
+
+            # Add this resource to its parent's set of child resources.
+            opts.parent._childResources.add(self)
 
             # Infer protection from parent, if one was provided.
             if opts.protect is None:
@@ -724,7 +745,7 @@ class Resource:
             if opts.aliases is None:
                 opts.aliases = []
 
-            opts.aliases = opts.aliases.copy()
+            opts.aliases = list(opts.aliases)
             for parent_alias in opts.parent._aliases:
                 child_alias = inherited_child_alias(
                     name, opts.parent._name, parent_alias, t)
@@ -873,6 +894,8 @@ class ComponentResource(Resource):
     operations for provisioning.
     """
 
+    _remote: bool
+
     def __init__(self,
                  t: str,
                  name: str,
@@ -889,6 +912,7 @@ class ComponentResource(Resource):
         """
         Resource.__init__(self, t, name, False, props, opts, remote, False)
         self.__dict__["id"] = None
+        self._remote = remote
 
     def register_outputs(self, outputs):
         """
@@ -945,8 +969,6 @@ class DependencyResource(CustomResource):
     def __init__(self, urn: str) -> None:
         super().__init__(t="", name="", props={}, opts=None, dependency=True)
 
-        from . import Output  # pylint: disable=import-outside-toplevel
-
         urn_future: asyncio.Future[str] = asyncio.Future()
         urn_known: asyncio.Future[bool] = asyncio.Future()
         urn_secret: asyncio.Future[bool] = asyncio.Future()
@@ -963,11 +985,14 @@ class DependencyProviderResource(ProviderResource):
     """
 
     def __init__(self, ref: str) -> None:
-        super().__init__(pkg="", name="", props={}, opts=None, dependency=True)
-
         ref_urn, ref_id = _parse_resource_reference(ref)
+        urn_parts = urn_util._parse_urn(ref_urn)
 
-        from . import Output  # pylint: disable=import-outside-toplevel
+        # `typ` will be `pulumi:providers:<package>` and we want the
+        # last part, which normally parses as `typ_name`.
+        pkg = urn_parts.typ_name
+
+        super().__init__(pkg=pkg, name="", props={}, opts=None, dependency=True)
 
         urn_future: asyncio.Future[str] = asyncio.Future()
         urn_known: asyncio.Future[bool] = asyncio.Future()
@@ -1010,7 +1035,6 @@ def create_urn(
     create_urn computes a URN from the combination of a resource name, resource type, optional
     parent, optional project and optional stack.
     """
-    from . import Output  # pylint: disable=import-outside-toplevel
     parent_prefix: Optional[Output[str]] = None
     if parent is not None:
         parent_urn = None
